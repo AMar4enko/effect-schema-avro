@@ -1,0 +1,23 @@
+{
+  "name": "effect-schema-avro",
+  "module": "index.ts",
+  "type": "module",
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@effect/vitest": "^0.17.6",
+    "@total-typescript/ts-reset": "^0.6.1",
+    "@types/bun": "latest",
+    "effect": "^3.12.10",
+    "vitest": "^3.1.3"
+  },
+  "peerDependencies": {
+    "typescript": "^5.7.3",
+    "effect": "^3.12.10"
+  },
+  "dependencies": {
+    "avro-js": "^1.12.0",
+    "avsc": "^5.7.7",
+    "kafkajs": "^2.2.4",
+    "tstyche": "^3.5.0"
+  }
+}
