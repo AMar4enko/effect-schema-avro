@@ -27,4 +27,3 @@ const decodePost = S.decodeSync(PostAvro)
 
 postsEqual(newPost, decodePost(encodePost(newPost)))
 ```
-

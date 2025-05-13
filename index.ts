@@ -418,17 +418,18 @@ export const avro = <A, I, R, EvA = never, EvI = never>(
     const evolve = Option.fromNullable(options?.evolve)
 
     const decode = yield* evolve.pipe(
-      Option.map(({ schema, test }) =>
+      Option.map(({ schema: lightSchema, test }) =>
         pipe(
-          compiler.run(s.ast),
+          compiler.run(lightSchema.ast),
           Effect.flatMap(outputToSchema),
           Effect.map((lightType) => {
             const resolver = lightType.createResolver(type)
-            const decodeLight = S.decodeUnknownSync(schema)
+            const decodeLight = S.decodeUnknownSync(lightSchema, { exact: false, onExcessProperty: `preserve` })
             return (a: Buffer) =>
               Effect.try({
                 try: () => {
                   const decoded = lightType.fromBuffer(a, resolver, true)
+
                   if (test(decodeLight(decoded))) {
                     return type.fromBuffer(a)
                   }

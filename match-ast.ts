@@ -1,9 +1,8 @@
-import { Chunk, Effect, Option, Pipeable, Record, Schema, SchemaAST, Tuple, flow, identity, pipe } from 'effect'
+import { Effect, Option, Pipeable, Record, SchemaAST, flow } from 'effect'
 import { pipeArguments } from 'effect/Pipeable'
 import {
   type AST,
   Declaration,
-  Enums,
   IndexSignature,
   OptionalType,
   PropertySignature,
@@ -18,7 +17,6 @@ import {
   TypeLiteral,
   Union,
 } from 'effect/SchemaAST'
-import type { TupleOf } from 'effect/Types'
 
 export type Matcher<A> = (ast: AST) => Option.Option<A>
 

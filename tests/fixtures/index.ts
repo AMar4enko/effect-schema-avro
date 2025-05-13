@@ -14,5 +14,6 @@ export class User extends S.Class<User>(`User`)({
 export class Post extends S.Class<Post>(`Post`)({
   id: S.Number,
   // content: S.Uint8ArrayFromSelf,
-  author: User,
+  test: S.String,
+  // author: User,
 }) {}
