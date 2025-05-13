@@ -20,7 +20,7 @@ const newPost = new Post({
   author: new User({ name: `John Doe`, id: 1, email: `john.doe@example.com` }),
 })
 
-const PostAvro = yield* avro(Post, { evolve: { schema: Id, test: (a) => a.id === 1 } })
+const PostAvro = avro(Post, { evolve: { schema: Id, test: (a) => a.id === 1 } })
 
 const encodePost = S.encodeSync(PostAvro)
 const decodePost = S.decodeSync(PostAvro)
@@ -28,3 +28,8 @@ const decodePost = S.decodeSync(PostAvro)
 postsEqual(newPost, decodePost(encodePost(newPost)))
 ```
 
+## Tags erasure
+
+In JSON world records are anonymous, hence the need for _tag.
+In AVRO world, records are always named, thus in AVRO binary format there is no need for _tag.
+_tag property is erased during AVRO encoding and brought back during decoding.
