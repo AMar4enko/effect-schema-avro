@@ -4,7 +4,7 @@ import { TaggedError } from 'effect/Data'
 import { Unexpected } from 'effect/ParseResult'
 import { IntSchemaId } from 'effect/Schema'
 import { type AST, IdentifierAnnotationId, TitleAnnotationId } from 'effect/SchemaAST'
-import * as C from './match-ast.js'
+import * as C from './compile.js'
 
 export const LongSchemaId: unique symbol = Symbol(`@schema-avro/Long`)
 export const FloatSchemaId: unique symbol = Symbol(`@schema-avro/Double`)
@@ -26,98 +26,29 @@ export const Int = S.Int
 
 export const Bytes = S.Uint8ArrayFromSelf
 
-export type AvroRecord = {
-  _tag: `Record`
-  name: string
-  fields: Record<string, CompilerOutput>
-  namespace: Option.Option<string>
-  doc: Option.Option<string>
-  aliases: Option.Option<string[]>
-}
-
-export type AvroPrimitive = {
-  _tag: `Primitive`
-  type: `boolean` | `int` | `long` | `float` | `double` | `bytes` | `string` | `null`
-  logicalType?: string
-}
-
-export type AvroFixed = {
-  _tag: `Fixed`
-  name: string
-  size: number
-}
-
-export type AvroUnion = {
-  _tag: `Union`
-  type: (AvroRecord | AvroPrimitive | AvroFixed)[]
-}
-
-export type CompilerOutput = AvroRecord | AvroPrimitive | AvroFixed | AvroUnion
-
-export class CompilerRegistryImpl {
-  namedTypes = new Map<string, CompilerOutput>()
+export class CompilerRegistry {
+  namedTypes = new Map<string, avsc.Type>()
   logicalTypes = new Map<string, typeof avsc.types.LogicalType>()
-}
 
-export class CompilerRegistry extends Context.Reference<CompilerRegistryImpl>()(`CompilerRegistry`, {
-  defaultValue: () => new CompilerRegistryImpl(),
-}) {
-  static getOrLookup<E, R>(
-    name: string,
-    lookup: Effect.Effect<CompilerOutput, E, R>,
-  ): Effect.Effect<CompilerOutput, E, R> {
-    return CompilerRegistry.pipe(
-      Effect.andThen((reg) =>
-        Effect.fromNullable(reg.namedTypes.get(name)).pipe(
-          Effect.orElse(() => lookup.pipe(Effect.tap((res) => Effect.sync(() => reg.namedTypes.set(name, res))))),
-        ),
-      ),
-    )
+  getOrLookup(name: string, lookup: () => avsc.Type) {
+    if (!this.namedTypes.has(name)) {
+      this.namedTypes.set(name, lookup())
+    }
+
+    return this.namedTypes.get(name)!
   }
-
-  static getAllLogicalTypes = CompilerRegistry.pipe(Effect.map((reg) => Object.fromEntries(reg.logicalTypes.entries())))
-
-  static accessLogicalType = <A, E, R>(
-    fn: (types: Map<string, typeof avsc.types.LogicalType>) => Effect.Effect<A, E, R>,
-  ) => CompilerRegistry.pipe(Effect.flatMap((reg) => fn(reg.logicalTypes)))
 }
 
-const primitive = (
-  type: Extract<CompilerOutput, { _tag: `Primitive` }>['type'],
-  opts?: { logicalType?: string },
-): CompilerOutput => ({
-  _tag: `Primitive`,
-  type,
-  logicalType: opts?.logicalType,
-})
+export interface CompilerState {
+  registry: CompilerRegistry
+  state: Option.Option<{ _tag: `Declaration`; id: string }>
+}
 
-const record = (
-  name: string,
-  fields: Record<string, CompilerOutput>,
-  attrs: {
-    namespace: Option.Option<string>
-    doc: Option.Option<string>
-    aliases: Option.Option<string[]>
-  },
-): CompilerOutput => ({
-  _tag: `Record`,
-  name,
-  fields,
-  namespace: attrs.namespace,
-  doc: attrs.doc,
-  aliases: attrs.aliases,
-})
+const getDeclarationState = ({ state }: CompilerState) =>
+  state.pipe(Option.filter(({ _tag }) => _tag === `Declaration`))
 
-const fixed = (name: string, size: number): CompilerOutput => ({
-  _tag: `Fixed`,
-  name,
-  size,
-})
-
-const union = (type: Exclude<CompilerOutput, { _tag: `Union` }>[]): CompilerOutput => ({
-  _tag: `Union`,
-  type,
-})
+export const getDeclaration = (harness: C.Compiler.Harness<avsc.Type, CompilerState>) =>
+  getDeclarationState(harness.getState()).pipe(Option.map(({ id }) => id))
 
 const matchScalars = C.matchTags(
   `StringKeyword`,
@@ -160,8 +91,15 @@ const matchClass = C.matchTransformation(`FinalTransformation`, {
     }),
 })
 
-class Unsupported extends TaggedError(`Unsupported`)<{ message: string }> {}
-class MissingIdentifier extends TaggedError(`MissingIdentifier`)<{ message: string; ast: SchemaAST.AST }> {}
+class Unsupported extends Error {}
+class MissingIdentifier extends Error {
+  ast: SchemaAST.AST
+
+  constructor(ast: SchemaAST.AST, message = `Missing identifier`) {
+    super(message)
+    this.ast = ast
+  }
+}
 
 const getSchemaId = SchemaAST.getAnnotation(SchemaAST.SchemaIdAnnotationId)
 
@@ -172,22 +110,22 @@ const getNumberType = Match.type<unknown>().pipe(
   Match.orElse(() => `double` as const),
 )
 
-class PropertySignatureContext extends Context.Tag(`PropertySignatureState`)<
-  PropertySignatureContext,
-  { name: PropertyKey; isOptional: boolean; isReadonly: boolean }
->() {}
+// class PropertySignatureContext extends Context.Tag(`PropertySignatureState`)<
+//   PropertySignatureContext,
+//   { name: PropertyKey; isOptional: boolean; isReadonly: boolean }
+// >() {}
 
 export type CompileContext = { _tag: `Declaration`; id: string }
 
-const CompileContext = Context.GenericTag<CompileContext>(`@schema-avro/CompileContext`)
+// const CompileContext = Context.GenericTag<CompileContext>(`@schema-avro/CompileContext`)
 const filterCompileContext =
   <A extends CompileContext['_tag']>(tag: A) =>
   (decl: CompileContext) =>
     Option.fromNullable(decl._tag === tag ? decl : null) as Option.Option<Extract<CompileContext, { _tag: A }>>
 
-const getCompileContext = Effect.contextWithEffect((ctx: Context.Context<never>) =>
-  Context.getOption(CompileContext)(ctx),
-)
+// const getCompileContext = Effect.contextWithEffect((ctx: Context.Context<never>) =>
+//   Context.getOption(CompileContext)(ctx),
+// )
 
 /**
  * Creates codec for AVRO record, removing _tag field during encoding and adding it back during decoding.
@@ -215,175 +153,218 @@ const createAmbientTagLogicalType = (tag: string) => {
     }
   }
 }
-const compiler = C.make<CompilerOutput>()
-  .compileMatch(
-    matchScalars,
-    Effect.fn(`compileScalar`)(function* (ast) {
-      switch (ast._tag) {
-        case `StringKeyword`:
-          return primitive(`string`)
 
-        case `NumberKeyword`:
-          return getSchemaId(ast).pipe(
-            Option.map(getNumberType),
-            Option.getOrElse(() => `double` as const),
-            primitive,
-          )
+export const requestAmbientTag = (harness: C.Compiler.Harness<avsc.Type, CompilerState>, tag: string) => {
+  return harness.modifyState((state) => {
+    if (!state.registry.logicalTypes.has(`Tag_${tag}`)) {
+      state.registry.logicalTypes.set(`Tag_${tag}`, createAmbientTagLogicalType(tag))
+    }
 
-        case `BooleanKeyword`:
-          return primitive(`boolean`)
+    return [`Tag_${tag}`, state]
+  })
+}
 
-        default:
-          return yield* new Unsupported({ message: `Unsupported scalar: ${ast._tag}` })
-      }
-    }),
-  )
-  .compileMatch(
-    matchTypeLiteral,
-    Effect.fn(`compileTypeLiteral`)(function* (ast, compile) {
-      const id = yield* getCompileContext.pipe(
-        Effect.andThen(filterCompileContext(`Declaration`)),
-        Effect.map(({ id }) => id),
-        Effect.orElse(() => SchemaAST.getAnnotation<string>(SchemaAST.IdentifierAnnotationId)(ast)),
-        Effect.mapError(() => new MissingIdentifier({ message: `No identifier found`, ast })),
-      )
+const compiler = pipe(
+  C.make<avsc.Type, CompilerState>(),
+  C.compileMatch(matchScalars, function compileScalar(ast) {
+    switch (ast._tag) {
+      case `StringKeyword`:
+        return avsc.Type.forSchema({ type: `string` })
 
-      yield* CompilerRegistry.accessLogicalType((types) => {
-        if (!types.has(`Tag_${id}`)) {
-          types.set(`Tag_${id}`, createAmbientTagLogicalType(id))
-        }
-        return Effect.void
+      case `NumberKeyword`:
+        return getSchemaId(ast).pipe(
+          Option.map(getNumberType),
+          Option.match({
+            onNone: () => avsc.Type.forSchema({ type: `double` }),
+            onSome: (primitiveType) => avsc.Type.forSchema({ type: primitiveType }),
+          }),
+        )
+
+      case `BooleanKeyword`:
+        return avsc.Type.forSchema({ type: `boolean` })
+
+      default:
+        throw new Unsupported(`Unsupported scalar: ${ast._tag}`)
+    }
+  }),
+  C.compileMatch(matchTypeLiteral, function compileTypeLiteral(ast, harness) {
+    const declId = getDeclaration(harness)
+      .pipe(Option.orElse(() => SchemaAST.getIdentifierAnnotation(ast)))
+      .pipe(Option.getOrThrowWith(() => new MissingIdentifier(ast)))
+
+    const logicalType = requestAmbientTag(harness, declId)
+
+    return harness.modifyState((state) => {
+      const type = state.registry.getOrLookup(declId, () => {
+        const fields: avsc.schema.RecordType['fields'] = ast.propertySignatures
+          .map((sig) => {
+            if (sig.name === `_tag` && sig.type._tag === `Literal`) {
+              return false
+            }
+            return {
+              name: String(sig.name),
+              type: harness.compile(sig.type),
+            }
+          })
+          .filter(Boolean)
+
+        return avsc.Type.forSchema(
+          { type: `record`, name: declId, fields, logicalType: logicalType },
+          { logicalTypes: Object.fromEntries(state.registry.logicalTypes) },
+        )
       })
 
-      return yield* CompilerRegistry.getOrLookup(
-        id,
-        Effect.gen(function* () {
-          const fields = yield* Effect.all(
-            ast.propertySignatures
-              .map((sig) => {
-                if (sig.name === `_tag` && sig.type._tag === `Literal`) {
-                  return false
-                }
-
-                return compile(sig.type).pipe(
-                  Effect.provideService(PropertySignatureContext, {
-                    name: sig.name,
-                    isOptional: sig.isOptional,
-                    isReadonly: sig.isReadonly,
-                  }),
-                  Effect.map((field) => [sig.name, field] as const),
-                )
-              })
-              .filter(Boolean),
-          )
-
-          return record(id, Object.fromEntries(fields), {
-            aliases: Option.none(),
-            doc: Option.none(),
-            namespace: Option.none(),
-          })
-        }),
+      return [type, state]
+    })
+  }),
+  C.compileMatch(matchClass, function compileClass({ structure: { from, to: classId } }, harness) {
+    return harness.withState(
+      ({ registry }) => ({ registry, state: Option.some({ _tag: `Declaration`, id: classId }) }),
+      () => harness.compile(from),
+    )
+  }),
+  C.compileMatch(C.matchTags(`Suspend`), function compileSuspend(ast, { compile }) {
+    return compile(ast.f())
+  }),
+  C.compileMatch(matchUint8Array, function compileBytes(ast) {
+    return avsc.Type.forSchema({ type: `bytes` })
+  }),
+  C.compileMatch(C.matchTags(`Literal`), function compileLiteral(ast) {
+    return avsc.Type.forSchema({ type: `enum`, name: String(ast.literal), symbols: [String(ast.literal)] })
+  }),
+  C.compileMatch(C.matchTags(`Union`), function compileUnion(ast, { compile }) {
+    if (Array.every(ast.types, SchemaAST.isLiteral)) {
+      const name = SchemaAST.getIdentifierAnnotation(ast).pipe(
+        Option.getOrThrowWith(() => new MissingIdentifier(ast, `Literal union requires identifier`)),
       )
-    }),
-  )
-  .compileMatch(
-    matchClass,
-    Effect.fn(`compileClass`)(function* ({ structure: { from, to: classId } }, compile) {
-      return yield* compile(from).pipe(Effect.provideService(CompileContext, { _tag: `Declaration`, id: classId }))
-    }),
-  )
-  .compileMatch(
-    C.matchTags(`Suspend`),
-    Effect.fn(`compileSuspend`)(function* (ast, compile) {
-      return yield* compile(ast.f())
-    }),
-  )
-  .compileMatch(
-    matchUint8Array,
-    Effect.fn(`compileBytes`)(function* (ast) {
-      return primitive(`bytes`)
-    }),
-  )
-  .compileMatch(
-    C.matchTags(`Literal`),
-    Effect.fn(`compileLiteral`)(function* (ast) {
-      return primitive(`string`)
-    }),
-  )
-  .compileMatch(
-    C.matchTags(`Union`),
-    Effect.fn(`compileUnion`)(function* (ast, compile) {
-      const types = yield* Effect.all(ast.types.map(compile)).pipe(
-        Effect.tap((types) => {
-          if (Array.some(types, (t) => t._tag === `Union`)) {
-            return Effect.fail(new Unexpected(null, `Union types cannot be directly nested`))
-          }
+      return avsc.Type.forSchema({
+        type: `enum`,
+        name,
+        symbols: ast.types.map((t) => String((t as SchemaAST.Literal).literal)),
+      })
+    }
 
-          return Effect.void
-        }),
-      )
+    const unionTypes = compile([...ast.types])
 
-      return union(types as unknown as Exclude<CompilerOutput, { _tag: `Union` }>[])
-    }),
-  )
+    if (Array.some(unionTypes, (t) => t.typeName === `Union`)) {
+      throw new Unexpected(null, `Union types cannot be directly nested`)
+    }
 
-const outputToSchema: (output: CompilerOutput) => Effect.Effect<avsc.Type, never, never> =
-  Match.type<CompilerOutput>().pipe(
-    Match.tag(`Union`, ({ type }) => {
-      return Effect.all(type.map(outputToSchema)).pipe(Effect.map(avsc.Type.forTypes))
-    }),
-    Match.tag(`Primitive`, ({ type, logicalType }) => {
-      return CompilerRegistry.getAllLogicalTypes.pipe(
-        Effect.map((logicalTypes) => avsc.Type.forSchema({ type, logicalType }, { logicalTypes }) as avsc.Type),
-      )
-    }),
-    Match.tag(`Fixed`, ({ name, size }) => {
-      return CompilerRegistry.getAllLogicalTypes.pipe(
-        Effect.map(
-          (logicalTypes) =>
-            avsc.Type.forSchema(
-              {
-                type: `fixed`,
-                name,
-                size,
-              },
-              { logicalTypes },
-            ) as avsc.Type,
-        ),
-      )
-    }),
-    Match.tag(`Record`, ({ name, fields }) => {
-      return CompilerRegistry.getAllLogicalTypes.pipe(
-        Effect.bindTo(`logicalTypes`),
-        Effect.bind(`fields`, () =>
-          Effect.all(
-            Object.entries(fields).map(([name, field]) =>
-              outputToSchema(field).pipe(
-                Effect.andThen((a) => ({
-                  name,
-                  type: a,
-                })),
-              ),
-            ),
-          ),
-        ),
-        Effect.map(({ logicalTypes, fields }) =>
-          avsc.Type.forSchema(
-            {
-              name,
-              type: `record`,
-              fields,
-              logicalType: `Tag_${name}`,
-            },
-            {
-              logicalTypes,
-            },
-          ),
-        ),
-      )
-    }),
-    Match.orElseAbsurd,
-  )
+    return avsc.Type.forTypes(unionTypes)
+  }),
+)
+
+// const compiler = C.make<CompilerOutput>()
+//   .compileMatch(
+//     matchScalars,
+//     Effect.fn(`compileScalar`)(function* (ast) {
+//       switch (ast._tag) {
+//         case `StringKeyword`:
+//           return primitive(`string`)
+
+//         case `NumberKeyword`:
+//           return getSchemaId(ast).pipe(
+//             Option.map(getNumberType),
+//             Option.getOrElse(() => `double` as const),
+//             primitive,
+//           )
+
+//         case `BooleanKeyword`:
+//           return primitive(`boolean`)
+
+//         default:
+//           return yield* new Unsupported({ message: `Unsupported scalar: ${ast._tag}` })
+//       }
+//     }),
+//   )
+//   .compileMatch(
+//     matchTypeLiteral,
+//     Effect.fn(`compileTypeLiteral`)(function* (ast, compile) {
+//       const id = yield* getCompileContext.pipe(
+//         Effect.andThen(filterCompileContext(`Declaration`)),
+//         Effect.map(({ id }) => id),
+//         Effect.orElse(() => SchemaAST.getAnnotation<string>(SchemaAST.IdentifierAnnotationId)(ast)),
+//         Effect.mapError(() => new MissingIdentifier({ message: `No identifier found`, ast })),
+//       )
+
+//       yield* CompilerRegistry.accessLogicalType((types) => {
+//         if (!types.has(`Tag_${id}`)) {
+//           types.set(`Tag_${id}`, createAmbientTagLogicalType(id))
+//         }
+//         return Effect.void
+//       })
+
+//       return yield* CompilerRegistry.getOrLookup(
+//         id,
+//         Effect.gen(function* () {
+//           const fields = yield* Effect.all(
+//             ast.propertySignatures
+//               .map((sig) => {
+//                 if (sig.name === `_tag` && sig.type._tag === `Literal`) {
+//                   return false
+//                 }
+
+//                 return compile(sig.type).pipe(
+//                   Effect.provideService(PropertySignatureContext, {
+//                     name: sig.name,
+//                     isOptional: sig.isOptional,
+//                     isReadonly: sig.isReadonly,
+//                   }),
+//                   Effect.map((field) => [sig.name, field] as const),
+//                 )
+//               })
+//               .filter(Boolean),
+//           )
+
+//           return record(id, Object.fromEntries(fields), {
+//             aliases: Option.none(),
+//             doc: Option.none(),
+//             namespace: Option.none(),
+//           })
+//         }),
+//       )
+//     }),
+//   )
+//   .compileMatch(
+//     matchClass,
+//     Effect.fn(`compileClass`)(function* ({ structure: { from, to: classId } }, compile) {
+//       return yield* compile(from).pipe(Effect.provideService(CompileContext, { _tag: `Declaration`, id: classId }))
+//     }),
+//   )
+//   .compileMatch(
+//     C.matchTags(`Suspend`),
+//     Effect.fn(`compileSuspend`)(function* (ast, compile) {
+//       return yield* compile(ast.f())
+//     }),
+//   )
+//   .compileMatch(
+//     matchUint8Array,
+//     Effect.fn(`compileBytes`)(function* (ast) {
+//       return primitive(`bytes`)
+//     }),
+//   )
+//   .compileMatch(
+//     C.matchTags(`Literal`),
+//     Effect.fn(`compileLiteral`)(function* (ast) {
+//       return primitive(`string`)
+//     }),
+//   )
+//   .compileMatch(
+//     C.matchTags(`Union`),
+//     Effect.fn(`compileUnion`)(function* (ast, compile) {
+//       const types = yield* Effect.all(ast.types.map(compile)).pipe(
+//         Effect.tap((types) => {
+//           if (Array.some(types, (t) => t._tag === `Union`)) {
+//             return Effect.fail(new Unexpected(null, `Union types cannot be directly nested`))
+//           }
+
+//           return Effect.void
+//         }),
+//       )
+
+//       return union(types as unknown as Exclude<CompilerOutput, { _tag: `Union` }>[])
+//     }),
+//   )
 
 const Buffer: S.Schema<Buffer, Buffer> = S.make(
   new SchemaAST.AnyKeyword({
@@ -405,65 +386,57 @@ export class AvroEvolveTestError extends Unexpected {
 export const avro = <A, I, R, EvA = never, EvI = never>(
   s: S.Schema<A, I, R>,
   options?: { evolve: AvroEvolve<EvA, EvI, never> },
-) =>
-  Effect.gen(function* () {
-    const astWithoutTags = C.map(Option.liftPredicate(SchemaAST.isLiteral), (ast, path) => {
-      if (path[0] === `_tag`) {
-        return new SchemaAST.AnyKeyword()
-      }
-      return ast
-    })(s.ast)
+) => {
+  const [type, state] = compiler.run(s.ast, {
+    registry: new CompilerRegistry(),
+    state: Option.none(),
+  })
 
-    const type = yield* pipe(compiler.run(s.ast), Effect.flatMap(outputToSchema))
-    const evolve = Option.fromNullable(options?.evolve)
+  const evolve = Option.fromNullable(options?.evolve)
 
-    const decode = yield* evolve.pipe(
-      Option.map(({ schema, test }) =>
-        pipe(
-          compiler.run(s.ast),
-          Effect.flatMap(outputToSchema),
-          Effect.map((lightType) => {
-            const resolver = lightType.createResolver(type)
-            const decodeLight = S.decodeUnknownSync(schema)
-            return (a: Buffer) =>
-              Effect.try({
-                try: () => {
-                  const decoded = lightType.fromBuffer(a, resolver, true)
-                  if (test(decodeLight(decoded))) {
-                    return type.fromBuffer(a)
-                  }
-                  throw new AvroEvolveTestError(a)
-                },
-                catch: (e) => {
-                  if (e instanceof AvroEvolveTestError) {
-                    return e
-                  }
+  const decode = evolve.pipe(
+    Option.map(({ schema, test }) =>
+      pipe(compiler.run(s.ast, state), ([lightType]) => {
+        const resolver = lightType.createResolver(type)
+        const decodeLight = S.decodeUnknownSync(schema)
 
-                  return new Unexpected(null, `Error during type evolution:\n${String(e)}`)
-                },
-              })
-          }),
-        ),
-      ),
-      Option.getOrElse(() =>
-        Effect.succeed((a: Buffer) =>
+        return (a: Buffer) =>
           Effect.try({
-            try() {
-              return type.fromBuffer(a)
+            try: () => {
+              const decoded = lightType.fromBuffer(a, resolver, true)
+              if (test(decodeLight(decoded))) {
+                return type.fromBuffer(a)
+              }
+              throw new AvroEvolveTestError(a)
             },
-            catch(e) {
+            catch: (e) => {
+              if (e instanceof AvroEvolveTestError) {
+                return e
+              }
+
               return new Unexpected(null, `Error during type evolution:\n${String(e)}`)
             },
-          }),
-        ),
-      ),
-    )
+          })
+      }),
+    ),
+    Option.getOrElse(
+      () => (a: Buffer) =>
+        Effect.try({
+          try() {
+            return type.fromBuffer(a)
+          },
+          catch(e) {
+            return new Unexpected(null, `Error during type evolution:\n${String(e)}`)
+          },
+        }),
+    ),
+  )
 
-    return S.transformOrFail(Buffer, s, {
-      decode,
-      encode: (a) => Effect.sync(() => type.toBuffer(a)),
-      strict: false,
-    }) as S.Schema<A, Buffer, R>
-  })
+  return S.transformOrFail(Buffer, s, {
+    decode,
+    encode: (a) => Effect.sync(() => type.toBuffer(a)),
+    strict: false,
+  }) as S.Schema<A, Buffer, R>
+}
 
 export { compiler }

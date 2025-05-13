@@ -27,21 +27,30 @@ export type ApplyMatchers<A extends { [key in keyof A]: A[key] }> = {
 }
 
 export declare namespace Compiler {
-  export interface Compiler<A = never, E = never, R = never> extends Pipeable.Pipeable {
-    run: (ast: AST) => Effect.Effect<A, E, R>
-    compileMatch: <T, A2, E2, R2>(
-      predicate: Matcher<T>,
-      fn: (match: T, compile: (ast: AST) => Effect.Effect<A, E, R>) => Effect.Effect<A2, E2, R2>,
-    ) => Compiler<A | A2, E | E2, R | R2>
+  export type Output<A, S> = A
+
+  export interface Harness<A, State> {
+    compile: <T extends AST | AST[]>(ast: T) => [T] extends [AST] ? A : A[]
+    getState: () => State
+    modifyState: <A>(fn: (state: State) => [A, State]) => A
+    withState: (f: (state: State) => State, run: () => Output<A, State>) => Output<A, State>
   }
 
-  export interface CompilerInternal<A, E = never, R = never> extends Compiler<A, E, R> {
-    compile: (ast: AST, compile: this['run']) => Effect.Effect<A, E, R>
+  export interface Compiler<A, State> extends Pipeable.Pipeable {
+    run: (ast: AST, initialState: State) => [A, State]
   }
+
+  export interface CompilerInternal<A, State> extends Compiler<A, State> {
+    compile: (ast: AST, compiler: Harness<A, State>) => Output<A, State>
+  }
+
+  // biome-ignore lint/suspicious/noExplicitAny: <explanation>
+  export type AnyCompiler = Compiler<any, any>
 }
 
-export const isCompiler = <A, E, R>(value: Compiler.Compiler<A, E, R>): value is Compiler.CompilerInternal<A, E, R> =>
-  typeof value === 'object' && value !== null && 'compile' in value
+export const isCompiler = <A, State>(
+  value: Compiler.Compiler<A, State>,
+): value is Compiler.CompilerInternal<A, State> => typeof value === 'object' && value !== null && 'compile' in value
 
 export type MatchTransformation<
   Kind extends TransformationKind['_tag'],
@@ -96,45 +105,65 @@ export const matchTransformation = <
 }
 
 const proto = Object.freeze({
-  compile: (ast: AST) => Effect.fail(new Error(`Not implemented: ${ast}`)),
-  pipe: pipeArguments,
-  compileMatch<T, A, E, R>(
-    // biome-ignore lint/suspicious/noExplicitAny: <explanation>
-    this: Compiler.Compiler<any, any, any>,
-    predicate: Matcher<T>,
-    fn: (match: T, compile: (ast: AST) => Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>,
-  ) {
+  compile(ast: AST) {
+    throw new Error(`Not implemented: ${ast}`)
+  },
+  // biome-ignore lint/suspicious/noExplicitAny: <explanation>
+  run(this: Compiler.AnyCompiler, ast: AST, initialState: any) {
     if (!isCompiler(this)) {
       throw new Error(`Unexpected`)
     }
+    let state: unknown = initialState
 
-    const compile = (ast: AST, compile: (ast: AST) => Effect.Effect<A, E, R>) => {
-      return predicate(ast).pipe(
-        Option.map((t) => fn(t, compile)),
-        Option.getOrElse(() => this.compile(ast, compile)),
-      )
+    const getState = () => state
+    const modifyState = <A>(f: (state: unknown) => [A, unknown]) => {
+      const [a, newState] = f(state)
+      state = newState
+      return a
     }
 
-    const run = (ast: AST) => compile(ast, run)
+    const compile = (ast: AST | AST[]) => {
+      const withState = (f: (state: unknown) => unknown, run: () => unknown) => {
+        const oldState = state
+        state = f(state)
+        const result = run()
+        state = oldState
+        return result
+      }
 
-    return Object.create(proto, {
-      compile: {
-        value: compile,
-        writable: false,
-        enumerable: false,
-        configurable: false,
-      },
-      run: {
-        value: run,
-        writable: false,
-        enumerable: false,
-        configurable: false,
-      },
-    })
+      if (Array.isArray(ast)) {
+        return ast.map((ast) => this.compile(ast, { getState, modifyState, withState, compile }))
+      }
+
+      return this.compile(ast, { getState, modifyState, withState, compile })
+    }
+
+    return [compile(ast), state]
   },
+  pipe: pipeArguments,
 })
 
-export const make = <A = never>(): Compiler.Compiler<A> => Object.create(proto)
+export const make = <A, State>(): Compiler.Compiler<A, State> => Object.create(proto)
+
+export const compileMatch =
+  <T, A, B, State>(
+    predicate: Matcher<T>,
+    fn: (match: T, compile: Compiler.Harness<A, State>) => Compiler.Output<B, State>,
+  ) =>
+  (compiler: Compiler.Compiler<A, State>): Compiler.Compiler<A | B, State> =>
+    Object.create(compiler, {
+      compile: {
+        // biome-ignore lint/suspicious/noExplicitAny: <explanation>
+        value: (ast: AST, compile: Compiler.Harness<any, any>) => {
+          const res = predicate(ast)
+          if (res._tag == `Some`) {
+            return fn(res.value, compile)
+          }
+
+          return (compiler as Compiler.CompilerInternal<A, State>).compile(ast, compile)
+        },
+      },
+    })
 
 export const map = <A extends AST, B extends AST>(
   predicate: (ast: AST) => Option.Option<A>,

@@ -1,16 +1,16 @@
-import { Option } from 'effect'
+import { Option, Schema, SchemaAST, pipe } from 'effect'
 import type { AST, Declaration, FinalTransformation, Transformation, TypeLiteral } from 'effect/SchemaAST'
 import { describe, expect, test } from 'tstyche'
-import * as M from '../match-ast.js'
+import * as C from '../compile.js'
 
 describe(`matchTransformation`, () => {
   test(`with From filter`, () => {
-    const typeLiteral = M.matchTags(`TypeLiteral`)
-    const declaration = M.matchTags(`Declaration`)
+    const typeLiteral = C.matchTags(`TypeLiteral`)
+    const declaration = C.matchTags(`Declaration`)
 
-    const fromTypeLiteral = M.matchTransformation(`FinalTransformation`, { from: typeLiteral })
-    const toTypeLiteral = M.matchTransformation(`FinalTransformation`, { to: typeLiteral })
-    const fromTypeLiteralToDeclaration = M.matchTransformation(`FinalTransformation`, {
+    const fromTypeLiteral = C.matchTransformation(`FinalTransformation`, { from: typeLiteral })
+    const toTypeLiteral = C.matchTransformation(`FinalTransformation`, { to: typeLiteral })
+    const fromTypeLiteralToDeclaration = C.matchTransformation(`FinalTransformation`, {
       from: typeLiteral,
       to: declaration,
     })

@@ -1,9 +1,7 @@
 import { describe, expect, it } from '@effect/vitest'
-import * as avsc from 'avsc'
 import { Effect, Schema as S } from 'effect'
-import { parseJson } from 'effect/Schema'
 import { avro } from '../index.js'
-import { Content, Post, User } from './fixtures/index.js'
+import { Post, User } from './fixtures/index.js'
 
 const postsEqual = S.equivalence(Post)
 
@@ -11,7 +9,7 @@ describe(`Avro compiler`, () => {
   describe(`basic features`, () => {
     it.effect(`fixtures`, () =>
       Effect.gen(function* () {
-        const PostAvro = yield* avro(Post)
+        const PostAvro = avro(Post)
 
         const encodePost = S.encodeSync(PostAvro)
         const decodePost = S.decodeSync(PostAvro)
@@ -37,7 +35,7 @@ describe(`Avro compiler`, () => {
           author: new User({ name: `John Doe`, id: 1, email: `john.doe@example.com` }),
         })
 
-        const PostAvro = yield* avro(Post, { evolve: { schema: Id, test: (a) => a.id === 1 } })
+        const PostAvro = avro(Post, { evolve: { schema: Id, test: (a) => a.id === 1 } })
 
         const encodePost = S.encodeSync(PostAvro)
         const decodePost = S.decodeSync(PostAvro)
@@ -55,7 +53,7 @@ describe(`Avro compiler`, () => {
     it.effect(`Tagged types are serialized without _tag`, () =>
       Effect.gen(function* () {
         const TestStruct = S.TaggedStruct(`TestStruct`, {}).pipe(S.annotations({ identifier: `TestStruct` }))
-        const TestStructAvro = yield* avro(TestStruct)
+        const TestStructAvro = avro(TestStruct)
 
         const encodeContent = S.encodeSync(TestStructAvro)
         const decodeContent = S.decodeSync(TestStructAvro)
@@ -71,7 +69,7 @@ describe(`Avro compiler`, () => {
   describe(`union types`, () => {
     it.effect(`union types are serialized as union`, () =>
       Effect.gen(function* () {
-        const Union = yield* S.Union(Post, User).pipe(avro)
+        const Union = S.Union(Post, User).pipe(avro)
 
         const encodeUnion = S.encodeSync(Union)
         const decodeUnion = S.decodeSync(Union)
